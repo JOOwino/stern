@@ -25,15 +25,13 @@ import (
 
 // Target is a target to watch
 type Target struct {
-	Node      string
-	Namespace string
-	Pod       string
+	Pod       *corev1.Pod
 	Container string
 }
 
 // GetID returns the ID of the object
 func (t *Target) GetID() string {
-	return fmt.Sprintf("%s-%s-%s", t.Namespace, t.Pod, t.Container)
+	return fmt.Sprintf("%s-%s-%s", t.Pod.Namespace, t.Pod.Name, t.Container)
 }
 
 // targetState holds a last shown container ID
@@ -54,6 +52,7 @@ type targetFilterConfig struct {
 	excludePodFilter       []*regexp.Regexp
 	containerFilter        *regexp.Regexp
 	containerExcludeFilter []*regexp.Regexp
+	condition              Condition
 	initContainers         bool
 	ephemeralContainers    bool
 	containerStates        []ContainerState
@@ -67,7 +66,7 @@ func newTargetFilter(c targetFilterConfig) *targetFilter {
 }
 
 // visit passes filtered Targets to the visitor function
-func (f *targetFilter) visit(pod *corev1.Pod, visitor func(t *Target)) {
+func (f *targetFilter) visit(pod *corev1.Pod, visitor func(t *Target, conditionFound bool)) {
 	// filter by pod
 	if !f.c.podFilter.MatchString(pod.Name) {
 		return
@@ -77,6 +76,12 @@ func (f *targetFilter) visit(pod *corev1.Pod, visitor func(t *Target)) {
 		if re.MatchString(pod.Name) {
 			return
 		}
+	}
+
+	// filter by condition
+	conditionFound := true
+	if f.c.condition != (Condition{}) {
+		conditionFound = f.c.condition.Match(pod.Status.Conditions)
 	}
 
 	// filter by container statuses
@@ -105,14 +110,18 @@ OUTER:
 		}
 
 		t := &Target{
-			Node:      pod.Spec.NodeName,
-			Namespace: pod.Namespace,
-			Pod:       pod.Name,
+			Pod:       pod,
 			Container: c.Name,
 		}
 
+		if !conditionFound {
+			visitor(t, false)
+			f.forget(string(pod.UID))
+			continue
+		}
+
 		if f.shouldAdd(t, string(pod.UID), c) {
-			visitor(t)
+			visitor(t, true)
 		}
 	}
 }

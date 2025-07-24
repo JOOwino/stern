@@ -43,10 +43,9 @@ const TimestampFormatShort = "01-02 15:04:05"
 type Tail struct {
 	clientset corev1client.CoreV1Interface
 
-	NodeName       string
-	Namespace      string
-	PodName        string
-	ContainerName  string
+	Pod           *corev1.Pod
+	ContainerName string
+
 	Options        *TailOptions
 	closed         chan struct{}
 	podColor       *color.Color
@@ -67,14 +66,12 @@ type ResumeRequest struct {
 }
 
 // NewTail returns a new tail for a Kubernetes container inside a pod
-func NewTail(clientset corev1client.CoreV1Interface, nodeName, namespace, podName, containerName string, tmpl *template.Template, out, errOut io.Writer, options *TailOptions, diffContainer bool) *Tail {
-	podColor, containerColor := determineColor(podName, containerName, diffContainer)
+func NewTail(clientset corev1client.CoreV1Interface, pod *corev1.Pod, containerName string, tmpl *template.Template, out, errOut io.Writer, options *TailOptions, diffContainer bool) *Tail {
+	podColor, containerColor := determineColor(pod.Name, containerName, diffContainer)
 
 	return &Tail{
 		clientset:      clientset,
-		NodeName:       nodeName,
-		Namespace:      namespace,
-		PodName:        podName,
+		Pod:            pod,
 		ContainerName:  containerName,
 		Options:        options,
 		closed:         make(chan struct{}),
@@ -111,7 +108,7 @@ func (t *Tail) Start(ctx context.Context) error {
 
 	t.printStarting()
 
-	req := t.clientset.Pods(t.Namespace).GetLogs(t.PodName, &corev1.PodLogOptions{
+	req := t.clientset.Pods(t.Pod.Namespace).GetLogs(t.Pod.Name, &corev1.PodLogOptions{
 		Follow:       t.Options.Follow,
 		Timestamps:   true,
 		Container:    t.ContainerName,
@@ -155,9 +152,9 @@ func (t *Tail) printStarting() {
 		p := t.podColor.SprintFunc()
 		c := t.containerColor.SprintFunc()
 		if t.Options.Namespace {
-			fmt.Fprintf(t.errOut, "%s %s %s › %s\n", g("+"), p(t.Namespace), p(t.PodName), c(t.ContainerName))
+			fmt.Fprintf(t.errOut, "%s %s %s › %s\n", g("+"), p(t.Pod.Namespace), p(t.Pod.Name), c(t.ContainerName))
 		} else {
-			fmt.Fprintf(t.errOut, "%s %s › %s\n", g("+"), p(t.PodName), c(t.ContainerName))
+			fmt.Fprintf(t.errOut, "%s %s › %s\n", g("+"), p(t.Pod.Name), c(t.ContainerName))
 		}
 	}
 }
@@ -168,9 +165,9 @@ func (t *Tail) printStopping() {
 		p := t.podColor.SprintFunc()
 		c := t.containerColor.SprintFunc()
 		if t.Options.Namespace {
-			fmt.Fprintf(t.errOut, "%s %s %s › %s\n", r("-"), p(t.Namespace), p(t.PodName), c(t.ContainerName))
+			fmt.Fprintf(t.errOut, "%s %s %s › %s\n", r("-"), p(t.Pod.Namespace), p(t.Pod.Name), c(t.ContainerName))
 		} else {
-			fmt.Fprintf(t.errOut, "%s %s › %s\n", r("-"), p(t.PodName), c(t.ContainerName))
+			fmt.Fprintf(t.errOut, "%s %s › %s\n", r("-"), p(t.Pod.Name), c(t.ContainerName))
 		}
 	}
 }
@@ -200,25 +197,47 @@ func (t *Tail) ConsumeRequest(ctx context.Context, request rest.ResponseWrapper)
 	}
 }
 
-// Print prints a color coded log message with the pod and container names
-func (t *Tail) Print(msg string) {
+func (t *Tail) sprint(msg string) (string, error) {
 	vm := Log{
 		Message:        msg,
-		NodeName:       t.NodeName,
-		Namespace:      t.Namespace,
-		PodName:        t.PodName,
+		NodeName:       t.Pod.Spec.NodeName,
+		Namespace:      t.Pod.Namespace,
+		PodName:        t.Pod.Name,
 		ContainerName:  t.ContainerName,
+		Labels:         t.Pod.Labels,
+		Annotations:    t.Pod.Annotations,
 		PodColor:       t.podColor,
 		ContainerColor: t.containerColor,
 	}
 
 	var buf bytes.Buffer
 	if err := t.tmpl.Execute(&buf, vm); err != nil {
-		fmt.Fprintf(t.errOut, "expanding template failed: %s\n", err)
+		return "", fmt.Errorf("expanding template failed: %s", err)
+	}
+
+	return buf.String(), nil
+}
+
+// Print prints a color coded log message with the pod and container names
+func (t *Tail) Print(msg string) {
+	buf, err := t.sprint(msg)
+	if err != nil {
+		fmt.Fprintf(t.errOut, "%s\n", err)
 		return
 	}
 
-	fmt.Fprint(t.out, buf.String())
+	fmt.Fprint(t.out, t.Options.HighlightMatchedString(buf))
+}
+
+// PrintWithoutHighlight prints a log message without applying any highlight.
+func (t *Tail) PrintWithoutHighlight(msg string) {
+	buf, err := t.sprint(msg)
+	if err != nil {
+		fmt.Fprintf(t.errOut, "%s\n", err)
+		return
+	}
+
+	fmt.Fprint(t.out, buf)
 }
 
 func (t *Tail) GetResumeRequest() *ResumeRequest {
@@ -231,7 +250,7 @@ func (t *Tail) GetResumeRequest() *ResumeRequest {
 func (t *Tail) consumeLine(line string) {
 	rfc3339Nano, content, err := splitLogLine(line)
 	if err != nil {
-		t.Print(fmt.Sprintf("[%v] %s", err, line))
+		t.PrintWithoutHighlight(fmt.Sprintf("[%v] %s", err, line))
 		return
 	}
 
@@ -247,18 +266,16 @@ func (t *Tail) consumeLine(line string) {
 		return
 	}
 
-	msg := t.Options.HighlightMatchedString(content)
-
 	if t.Options.Timestamps {
 		updatedTs, err := t.Options.UpdateTimezoneAndFormat(rfc3339Nano)
 		if err != nil {
-			t.Print(fmt.Sprintf("[%v] %s", err, line))
+			t.PrintWithoutHighlight(fmt.Sprintf("[%v] %s", err, line))
 			return
 		}
-		msg = updatedTs + " " + msg
+		content = updatedTs + " " + content
 	}
 
-	t.Print(msg)
+	t.Print(content)
 }
 
 func (t *Tail) rememberLastTimestamp(timestamp string) {

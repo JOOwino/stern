@@ -1,3 +1,45 @@
+# v1.32.0
+
+## :zap: Notable Changes
+
+### A new template function `prettyJSON`
+
+You can now use a new template function `prettyJSON` that parse input and emit it as pretty printed JSON. If it parse fails output string as is.
+
+```
+# Will try to parse .Message as JSON and pretty print it, if not json will output as is
+stern --template='{{ .Message | prettyJSON }}{{"\n"}}' backend
+# Or with parsed json, will drop non-json logs because of `with`
+stern --template='{{ with $msg := .Message | tryParseJSON }}{{ prettyJSON $msg }}{{"\n"}}{{end}}' backend
+```
+
+### A new template function `bunyanLevelColor`
+
+You can now use a new template function `bunyanLevelColor` that print [bunyan](https://github.com/trentm/node-bunyan) numeric log level using appropriate color.
+
+### A new flag `--condition`
+
+A new `--condition` allows you to filter logs with the pod condition on: `[condition-name[=condition-value]`. The default condition-value is true. Match is case-insensitive. Currently, it is only supported with --tail=0 or --no-follow.
+
+```
+# Only display logs for pods that are not ready:
+stern . --condition=ready=false --tail=0
+```
+
+## Changes
+
+* Add `--condition` (#276) 2576972 (Felipe Santos)
+* Add check for when `--no-follow` is set with `--tail=0` (#331) 276e906 (Felipe Santos)
+* Implement JSON pretty print (#324) ccd8add (Fabio Napoleoni)
+* Fix descriptions of `extjson` and `ppextjson` (#325) d9a9858 (Takashi Kusumi)
+* Allow `levelColor` template function to parse numbers (#321) db69276 (Jimmie Högklint)
+
+# v1.31.0
+
+## Changes
+* Fix --verbosity flag to show missing logs ([#317](https://github.com/stern/stern/pull/317)) c2b4410 (Takashi Kusumi)
+* Update dependencies for Kubernetes 1.31 ([#315](https://github.com/stern/stern/pull/315)) a4fdcc9 (Takashi Kusumi)
+
 # v1.30.0
 
 ## :zap: Notable Changes
@@ -25,7 +67,7 @@ You can also enable this feature in [the config file](https://github.com/stern/s
 diff-container: true
 ```
 
-### Changes
+## Changes
 * Add support to configure colors for pods and containers ([#306](https://github.com/stern/stern/pull/306)) [f4b2edc](https://github.com/stern/stern/commit/f4b2edc) (Takashi Kusumi)
 * Display different colors for different containers ([#305](https://github.com/stern/stern/pull/305)) [d1b5d74](https://github.com/stern/stern/commit/d1b5d74) (Se7en)
 * Support an array value in the config file ([#303](https://github.com/stern/stern/pull/303)) [6afabde](https://github.com/stern/stern/commit/6afabde) (Takashi Kusumi)
@@ -59,7 +101,7 @@ EOF
 The following template functions now support UNIX time seconds with nanoseconds (e.g., `1136171056.02`).
 
 - `toRFC3339Nano`
-- `toTUC`
+- `toUTC`
 - `toTimestamp`
 
 ## Changes

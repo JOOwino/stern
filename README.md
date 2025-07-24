@@ -32,7 +32,7 @@ go install github.com/stern/stern@latest
 
 If you use [asdf](https://asdf-vm.com/), you can install like this:
 ```
-asdf plugin-add stern
+asdf plugin add stern
 asdf install stern latest
 ```
 
@@ -74,6 +74,7 @@ Supported Kubernetes resources are `pod`, `replicationcontroller`, `service`, `d
  `--all-namespaces`, `-A`    | `false`                       | If present, tail across all namespaces. A specific namespace is ignored even if specified with --namespace.
  `--color`                   | `auto`                        | Force set color output. 'auto':  colorize if tty attached, 'always': always colorize, 'never': never colorize.
  `--completion`              |                               | Output stern command-line completion code for the specified shell. Can be 'bash', 'zsh' or 'fish'.
+ `--condition`               |                               | The condition to filter on: [condition-name[=condition-value]. The default condition-value is true. Match is case-insensitive. Currently only supported with --tail=0 or --no-follow.
  `--config`                  | `~/.config/stern/config.yaml` | Path to the stern config file
  `--container`, `-c`         | `.*`                          | Container name when multiple containers in pod. (regular expression)
  `--container-colors`        |                               | Specifies the colors used to highlight container names. Use the same format as --pod-colors. Defaults to the values of --pod-colors if omitted, and must match its length.
@@ -118,7 +119,7 @@ used.
 
 ### config file
 
-You can use the config file to change the default values of stern options. The default config file path is `~/.config/stern/config.yaml`. 
+You can use the config file to change the default values of stern options. The default config file path is `~/.config/stern/config.yaml`.
 
 ```yaml
 # <flag name>: <value>
@@ -134,49 +135,53 @@ You can change the config file path with `--config` flag or `STERNCONFIG` enviro
 stern supports outputting custom log messages.  There are a few predefined
 templates which you can use by specifying the `--output` flag:
 
-| output    | description                                                                                           |
-|-----------|-------------------------------------------------------------------------------------------------------|
-| `default` | Displays the namespace, pod and container, and decorates it with color depending on --color           |
-| `raw`     | Only outputs the log message itself, useful when your logs are json and you want to pipe them to `jq` |
-| `json`    | Marshals the log struct to json. Useful for programmatic purposes                                     |
+| output      | description                                                                                           |
+|-------------|-------------------------------------------------------------------------------------------------------|
+| `default`   | Displays the namespace, pod and container, and decorates it with color depending on --color           |
+| `raw`       | Only outputs the log message itself, useful when your logs are json and you want to pipe them to `jq` |
+| `json`      | Marshals the log struct to json. Useful for programmatic purposes                                     |
+| `extjson`   | Outputs extended JSON with colorized pod/container names                                              |
+| `ppextjson` | Pretty-prints extended JSON with colorized pod/container names                                        |
 
 It accepts a custom template through the `--template` flag, which will be
 compiled to a Go template and then used for every log message. This Go template
 will receive the following struct:
 
-| property        | type   | description                                 |
-|-----------------|--------|---------------------------------------------|
-| `Message`       | string | The log message itself                      |
-| `NodeName`      | string | The node name where the pod is scheduled on |
-| `Namespace`     | string | The namespace of the pod                    |
-| `PodName`       | string | The name of the pod                         |
-| `ContainerName` | string | The name of the container                   |
+| property        | type              | description                                 |
+|-----------------|-------------------|---------------------------------------------|
+| `Message`       | string            | The log message itself                      |
+| `NodeName`      | string            | The node name where the pod is scheduled on |
+| `Namespace`     | string            | The namespace of the pod                    |
+| `PodName`       | string            | The name of the pod                         |
+| `ContainerName` | string            | The name of the container                   |
+| `Labels`        | map[string]string | The labels of the pod                       |
+| `Annotations`   | map[string]string | The annotations of the pod                  |
 
 The following functions are available within the template (besides the [builtin
 functions](https://golang.org/pkg/text/template/#hdr-Functions)):
 
-| func            | arguments             | description                                                                       |
-|-----------------|-----------------------|-----------------------------------------------------------------------------------|
-| `json`          | `object`              | Marshal the object and output it as a json text                                   |
-| `color`         | `color.Color, string` | Wrap the text in color (.ContainerColor and .PodColor provided)                   |
-| `parseJSON`     | `string`              | Parse string as JSON                                                              |
-| `tryParseJSON`  | `string`              | Attempt to parse string as JSON, return nil on failure                             |
-| `extractJSONParts`    | `string, ...string` | Parse string as JSON and concatenate the given keys.                          |
-| `tryExtractJSONParts` | `string, ...string` | Attempt to parse string as JSON and concatenate the given keys. , return text on failure |
-| `extjson`       | `string`              | Parse the object as json and output colorized json                                |
-| `ppextjson`     | `string`              | Parse the object as json and output pretty-print colorized json                   |
-| `toRFC3339Nano` | `object`              | Parse timestamp (string, int, json.Number) and output it using RFC3339Nano format |
-| `toTimestamp`   | `object, string [, string]` | Parse timestamp (string, int, json.Number) and output it using the given layout in the timezone that is optionally given (defaults to UTC). |
-| `levelColor`    | `string`              | Print log level using appropriate color                                           |
-| `colorBlack`    | `string`              | Print text using black color                                                      |
-| `colorRed`      | `string`              | Print text using red color                                                        |
-| `colorGreen`    | `string`              | Print text using green color                                                      |
-| `colorYellow`   | `string`              | Print text using yellow color                                                     |
-| `colorBlue`     | `string`              | Print text using blue color                                                       |
-| `colorMagenta`  | `string`              | Print text using magenta color                                                    |
-| `colorCyan`     | `string`              | Print text using cyan color                                                       |
-| `colorWhite`    | `string`              | Print text using white color                                                      |
-
+| func                  | arguments                   | description                                                                                                                                 |
+|-----------------------|-----------------------------|---------------------------------------------------------------------------------------------------------------------------------------------|
+| `json`                | `object`                    | Marshal the object and output it as a json text                                                                                             |
+| `color`               | `color.Color, string`       | Wrap the text in color (.ContainerColor and .PodColor provided)                                                                             |
+| `parseJSON`           | `string`                    | Parse string as JSON                                                                                                                        |
+| `tryParseJSON`        | `string`                    | Attempt to parse string as JSON, return nil on failure                                                                                      |
+| `extractJSONParts`    | `string, ...string`         | Parse string as JSON and concatenate the given keys.                                                                                        |
+| `tryExtractJSONParts` | `string, ...string`         | Attempt to parse string as JSON and concatenate the given keys. , return text on failure                                                    |
+| `prettyJSON`          | `any`                       | Parse input and emit it as pretty printed JSON, if parse fails output string as is.                                                         |
+| `toRFC3339Nano`       | `object`                    | Parse timestamp (string, int, json.Number) and output it using RFC3339Nano format                                                           |
+| `toTimestamp`         | `object, string [, string]` | Parse timestamp (string, int, json.Number) and output it using the given layout in the timezone that is optionally given (defaults to UTC). |
+| `levelColor`          | `string`                    | Print log level using appropriate color                                                                                                     |
+| `bunyanLevelColor`    | `string`                    | Print [bunyan](https://github.com/trentm/node-bunyan) numeric log level using appropriate color                                             |
+| `colorBlack`          | `string`                    | Print text using black color                                                                                                                |
+| `colorRed`            | `string`                    | Print text using red color                                                                                                                  |
+| `colorGreen`          | `string`                    | Print text using green color                                                                                                                |
+| `colorYellow`         | `string`                    | Print text using yellow color                                                                                                               |
+| `colorBlue`           | `string`                    | Print text using blue color                                                                                                                 |
+| `colorMagenta`        | `string`                    | Print text using magenta color                                                                                                              |
+| `colorCyan`           | `string`                    | Print text using cyan color                                                                                                                 |
+| `colorWhite`          | `string`                    | Print text using white color                                                                                                                |
+| `colorCustom`         | `string, int [, int]`       | Print text using custom color, i.e. {{color "Hi" 3 96}} will print "Hi" as italic with cyan color                                           |
 
 ### Log level verbosity
 
@@ -326,6 +331,15 @@ Output using a custom template that tries to parse JSON or fallbacks to raw form
 stern --template='{{.PodName}}/{{.ContainerName}} {{ with $msg := .Message | tryParseJSON }}[{{ colorGreen (toRFC3339Nano $msg.ts) }}] {{ levelColor $msg.level }} ({{ colorCyan $msg.caller }}) {{ $msg.msg }}{{ else }} {{ .Message }} {{ end }}{{"\n"}}' backend
 ```
 
+Pretty print JSON (if it is JSON) and output it:
+
+```
+# Will try to parse .Message as JSON and pretty print it, if not json will output as is
+stern --template='{{ .Message | prettyJSON }}{{"\n"}}' backend
+# Or with parsed json, will drop non-json logs because of `with`
+stern --template='{{ with $msg := .Message | tryParseJSON }}{{ prettyJSON $msg }}{{"\n"}}{{end}}' backend
+```
+
 Load custom template from file:
 
 ```
@@ -348,6 +362,12 @@ Read from stdin:
 
 ```
 stern --stdin < service.log
+```
+
+Only display logs for pods that are not ready:
+
+```
+stern . --condition=ready=false --tail=0
 ```
 
 ## Completion

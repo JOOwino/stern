@@ -60,6 +60,7 @@ type options struct {
 	timezone            string
 	since               time.Duration
 	namespaces          []string
+	condition           string
 	exclude             []string
 	include             []string
 	highlight           []string
@@ -106,6 +107,7 @@ func NewOptions(streams genericclioptions.IOStreams) *options {
 		color:               "auto",
 		container:           ".*",
 		containerStates:     []string{stern.ALL_STATES},
+		condition:           "",
 		initContainers:      true,
 		ephemeralContainers: true,
 		output:              "default",
@@ -161,16 +163,19 @@ func (o *options) Validate() error {
 		return errors.New("One of pod-query, --selector, --field-selector, --prompt or --stdin is required")
 	}
 	if o.selector != "" && o.resource != "" {
-		return errors.New("--selector and the <resource>/<name> query can not be set at the same time")
+		return errors.New("--selector and the <resource>/<name> query cannot be set at the same time")
+	}
+	if o.noFollow && o.tail == 0 {
+		return errors.New("--no-follow cannot be used with --tail=0")
+	}
+	if o.condition != "" && o.tail != 0 && !o.noFollow {
+		return errors.New("--condition is currently only supported with --tail=0 or --no-follow")
 	}
 
 	return nil
 }
 
 func (o *options) Run(cmd *cobra.Command) error {
-	if err := o.setVerbosity(); err != nil {
-		return err
-	}
 	if err := o.setColorList(); err != nil {
 		return err
 	}
@@ -226,6 +231,14 @@ func (o *options) sternConfig() (*stern.Config, error) {
 	highlight, err := compileREs(o.highlight)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to compile regular expression for highlight filter")
+	}
+
+	condition := stern.Condition{}
+	if o.condition != "" {
+		condition, err = stern.NewCondition(o.condition)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	containerStates := []stern.ContainerState{}
@@ -307,6 +320,7 @@ func (o *options) sternConfig() (*stern.Config, error) {
 		Location:              location,
 		ContainerQuery:        container,
 		ExcludeContainerQuery: excludeContainer,
+		Condition:             condition,
 		ContainerStates:       containerStates,
 		Exclude:               exclude,
 		Include:               include,
@@ -425,6 +439,7 @@ func (o *options) AddFlags(fs *pflag.FlagSet) {
 	fs.StringArrayVarP(&o.exclude, "exclude", "e", o.exclude, "Log lines to exclude. (regular expression)")
 	fs.StringArrayVarP(&o.excludeContainer, "exclude-container", "E", o.excludeContainer, "Container name to exclude when multiple containers in pod. (regular expression)")
 	fs.StringArrayVar(&o.excludePod, "exclude-pod", o.excludePod, "Pod name to exclude. (regular expression)")
+	fs.StringVar(&o.condition, "condition", o.condition, "The condition to filter on: [condition-name[=condition-value]. The default condition-value is true. Match is case-insensitive. Currently only supported with --tail=0 or --no-follow.")
 	fs.BoolVar(&o.noFollow, "no-follow", o.noFollow, "Exit when all logs have been shown.")
 	fs.StringArrayVarP(&o.include, "include", "i", o.include, "Log lines to include. (regular expression)")
 	fs.StringArrayVarP(&o.highlight, "highlight", "H", o.highlight, "Log lines to highlight. (regular expression)")
@@ -578,6 +593,27 @@ func (o *options) generateTemplate() (*template.Template, error) {
 			}
 			return strings.TrimSuffix(string(b), "\n"), nil
 		},
+		"prettyJSON": func(value any) string {
+			var data map[string]any
+
+			switch v := value.(type) {
+			case string:
+				if err := json.Unmarshal([]byte(v), &data); err != nil {
+					return v
+				}
+			case map[string]any:
+				data = v
+			default:
+				return fmt.Sprintf("%v", value)
+			}
+
+			b, err := json.MarshalIndent(data, "", "  ")
+			if err != nil {
+				return fmt.Sprintf("%v", value)
+			}
+
+			return string(b)
+		},
 		"toRFC3339Nano": func(ts any) string {
 			return toTime(ts).Format(time.RFC3339Nano)
 		},
@@ -605,6 +641,9 @@ func (o *options) generateTemplate() (*template.Template, error) {
 		"color": func(color color.Color, text string) string {
 			return color.SprintFunc()(text)
 		},
+		"colorCustom": func(text string, args ...color.Attribute) string {
+			return color.New(args...).SprintFunc()(text)
+		},
 		"colorBlack":   color.BlackString,
 		"colorRed":     color.RedString,
 		"colorGreen":   color.GreenString,
@@ -613,31 +652,71 @@ func (o *options) generateTemplate() (*template.Template, error) {
 		"colorMagenta": color.MagentaString,
 		"colorCyan":    color.CyanString,
 		"colorWhite":   color.WhiteString,
-		"levelColor": func(level string) string {
+		"levelColor": func(value any) string {
+			switch level := value.(type) {
+			case string:
+				var levelColor *color.Color
+				switch strings.ToLower(level) {
+				case "debug":
+					levelColor = color.New(color.FgMagenta)
+				case "info":
+					levelColor = color.New(color.FgBlue)
+				case "warn":
+					levelColor = color.New(color.FgYellow)
+				case "warning":
+					levelColor = color.New(color.FgYellow)
+				case "error":
+					levelColor = color.New(color.FgRed)
+				case "dpanic":
+					levelColor = color.New(color.FgRed)
+				case "panic":
+					levelColor = color.New(color.FgRed)
+				case "fatal":
+					levelColor = color.New(color.FgCyan)
+				case "critical":
+					levelColor = color.New(color.FgCyan)
+				default:
+					return level
+				}
+				return levelColor.SprintFunc()(level)
+			default:
+				return ""
+			}
+		},
+		"bunyanLevelColor": func(value any) string {
+			var lv int64
+			var err error
+
+			switch level := value.(type) {
+			// tryParseJSON yields json.Number
+			case json.Number:
+				lv, err = level.Int64()
+				if err != nil {
+					return ""
+				}
+			// parseJSON yields float64
+			case float64:
+				lv = int64(level)
+			default:
+				return ""
+			}
+
 			var levelColor *color.Color
-			switch strings.ToLower(level) {
-			case "debug":
+			switch {
+			case lv < 30:
 				levelColor = color.New(color.FgMagenta)
-			case "info":
+			case lv < 40:
 				levelColor = color.New(color.FgBlue)
-			case "warn":
+			case lv < 50:
 				levelColor = color.New(color.FgYellow)
-			case "warning":
-				levelColor = color.New(color.FgYellow)
-			case "error":
+			case lv < 60:
 				levelColor = color.New(color.FgRed)
-			case "dpanic":
-				levelColor = color.New(color.FgRed)
-			case "panic":
-				levelColor = color.New(color.FgRed)
-			case "fatal":
-				levelColor = color.New(color.FgCyan)
-			case "critical":
+			case lv < 100:
 				levelColor = color.New(color.FgCyan)
 			default:
-				return level
+				return strconv.FormatInt(lv, 10)
 			}
-			return levelColor.SprintFunc()(level)
+			return levelColor.SprintFunc()(lv)
 		},
 	}
 	template, err := template.New("log").Funcs(funs).Parse(t)
@@ -673,6 +752,11 @@ func NewSternCmd(stream genericclioptions.IOStreams) (*cobra.Command, error) {
 		Use:   "stern pod-query",
 		Short: "Tail multiple pods and containers from Kubernetes",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// klog's v flag should be initialized before creating a k8s client
+			if err := o.setVerbosity(); err != nil {
+				return err
+			}
+
 			// Output version information and exit
 			if o.version {
 				outputVersionInfo(o.Out)
